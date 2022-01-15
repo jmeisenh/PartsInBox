@@ -1,0 +1,240 @@
+---
+title: "Particles In a Box"
+date: "`r Sys.Date()`"
+author: "Justin Meisenhelter"
+output: 
+  rmdformats::downcute:
+    highlight: tango
+    df_print: paged
+    collapsed: false
+---
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(gapminder)
+library(gganimate)
+library(gifski)
+library(magick)
+```
+
+
+# Generate Particles start characteristics
+```{r}
+
+# all unit SI
+# Start with electrons
+# Number of particles
+n <- 5
+#Mass of particles
+mass <- 9.109 * 10**-31
+m_std <- 0
+# charge of particles
+e <- 1.602 * 10**-19
+e_std <- 0
+# electric permitivity in vacuum
+kVac <- 9 * 10**9
+# average starting speed
+speed <- 1
+#starting speed std
+speed_Std <- .05
+
+# Box width
+BoxW <- 1
+BoxH <- 1
+# time between snapshots
+dt <- .00001
+# total time to run simulation
+totalTime <- .05
+#refresh rate of graphs in seconds
+refresh <- .5
+#energy absorbtion of walls
+eLoss <- .1
+
+```
+ 
+# generate intial particles
+```{r}
+mass_Vec <- rnorm(n = n, mean = mass, sd = m_std)
+charge_Vec <- rnorm(n = n, mean = e, sd = e_std)
+speed_Vec <- rnorm(n, mean = speed, sd = speed_Std)
+accX <- rep.int(0, n)
+accY <- rep.int(0, n)
+xVelPer <- runif(n, 0, 1)
+xPos <- runif(n, 0, .9 * BoxW)
+yPos <- runif(n, 0, .9 * BoxH)
+xDir <-sample(c(-1,1), n, replace = TRUE)
+yDir <- sample(c(-1,1), n, replace = TRUE)
+particles_Start <- data.frame(mass_Vec, charge_Vec, speed_Vec, xVelPer, xPos, yPos, xDir, yDir, accY, accX)
+```
+# generate random velcity direction
+```{r}
+particles_Start %>%
+  mutate(xVel = (speed_Vec * xVelPer)* xDir) %>%
+  mutate(yVel = (speed_Vec * (1 - xVelPer))* yDir) -> partStVel
+
+```
+# graph starting position
+```{r}
+g <- ggplot(partStVel, aes(x = xPos, y = yPos))
+startPlot <- g + geom_point()
+startPlot
+```
+# move the particles by dt
+```{r}
+partStVel %>%
+# If too close to wall they bounce by changing the velocity direction
+  mutate(xDir = ifelse(
+    xPos <= .05 * BoxW | xPos >= .95 * BoxW, 
+    xDir * -1,
+    xDir)) %>%
+    mutate(yDir = ifelse(
+    yPos <= .05 * BoxH | yPos >= .95 * BoxH, 
+    yDir * -1,
+    yDir)) %>%
+  mutate(xPos = xPos + xVel * dt) %>%
+  mutate(yPos = yPos + yVel * dt) -> partsInMotion
+g <- ggplot(partsInMotion, aes(x = xPos, y = yPos))
+motionPlot <- g + geom_point()
+motionPlot
+```
+### Add electrostatic repulsion
+```{r}
+i = 0
+j = 1
+
+while (i <= totalTime) {
+
+  for (k in 1:nrow(partsInMotion)){
+# for each particle k, recalculate new acceleration based on updated position
+  ax = 0
+  ay = 0
+  for (m in 1:nrow(partsInMotion)){
+    if (k != m){ # loop for calculating acceleration caused on particle k from particle m
+# calculate angle between target particle k in relation to particle m
+      theta = atan((partsInMotion[m, "yPos"] - partsInMotion[k, "yPos"])/
+                     (partsInMotion[m, "xPos"] - partsInMotion[k, "xPos"]))
+# calculate force on particle k from particle m
+      fx = kVac * e^2 * cos(theta) /((partsInMotion[m, "xPos"] - partsInMotion[k, "xPos"])^2 -
+                       (partsInMotion[m, "yPos"] - partsInMotion[k, "yPos"])^2)
+      fy = kVac * e^2 * sin(theta) /((partsInMotion[m, "xPos"] - partsInMotion[k, "xPos"])^2 -
+                       (partsInMotion[m, "yPos"] - partsInMotion[k, "yPos"])^2)
+# determine direction of force vector and change sign of force if necessary
+      if (partsInMotion[m, "yPos"] > partsInMotion[k, "yPos"]){
+        fy = fy * -1
+      }
+      if (partsInMotion[m, "xPos"] > partsInMotion[k, "xPos"]){
+        fx = fx * -1
+      }
+# Calculate acceleration of particle k by adding acceleration caused by particle m
+      ax = ax + fx/mass
+      ay = ay + fy/mass
+    }
+  }
+# write new acceleration to df
+  partsInMotion[k, "accX"] = ax
+  partsInMotion[k, "accY"] = ay
+}
+  partsInMotion %>%
+# If too close to wall they bounce by changing the velocity direction and lose energy
+  mutate(xVel = ifelse(
+    xPos <= .02 * BoxW, 
+    abs(xVel) * (1- eLoss),
+    xVel)) %>%
+  mutate(xVel = ifelse(
+    xPos >= .98 * BoxW,
+    abs(xVel) * -1 * (1 - eLoss),
+    xVel)) %>%
+  mutate(yVel = ifelse(
+    yPos <= .02 * BoxH,
+    abs(yVel) * (1 - eLoss),
+    yVel)) %>%
+  mutate(yVel = ifelse(
+    yPos >= .98 * BoxH,
+    abs(yVel) * -1 * (1 - eLoss),
+    yVel)) %>%
+
+# Calculate new velocity and write to DF
+  mutate(xVel = xVel + accX * dt) %>%
+  mutate(yVel = yVel + accY * dt) %>%
+# if particle bounces it loses energy
+  # mutate(xVel = ifelse(
+  #   xPos <= .02 * BoxW | xPos >= .98 * BoxW,
+  #   xVel * (eLoss),
+  #   xVel)) %>%
+  # mutate(yVel = ifelse(
+  #   yPos <= .02 * BoxH | yPos >= .98 * BoxH,
+  #   yVel * (eLoss),
+  #   yVel)) %>%
+# Calculate new particle position and write to df
+  mutate(xPos = xPos + (xVel * dt)) %>%
+  mutate(yPos = yPos + (yVel * dt)) -> partsInMotion
+# if particle leaves the box put it back in
+
+  # mutate(xPos = ifelse(
+  #   xPos < 0,
+  #   .01 * BoxW,
+  #   xPos
+  #  )) %>%
+  # mutate(xPos = ifelse(
+  #   xPos > BoxW,
+  #   .99 * BoxW,
+  #   xPos
+  # )) %>%
+  #   mutate(yPos = ifelse(
+  #   yPos < 0,
+  #   .01 * BoxH,
+  #   xPos
+  #  )) %>%
+  # mutate(yPos = ifelse(
+  #   yPos > BoxH,
+  #   .99 * BoxH,
+  #   yPos
+  # )) -> partsInMotion
+  
+    
+
+  if (j %% 10 == 0){ 
+    print(partsInMotion)
+  mypath <- file.path("C:", "Users", "jmeis", "Projects", "ParticleBox",
+                    "images", paste("motion_", formatC(j, width = 5, flag="0"), ".jpg", sep = ""))
+  myTitle <- paste("T = ", i, "seconds", "j = ", j, sep = " ")
+  g <- ggplot(partsInMotion, aes(x = xPos, y = yPos))
+  motionPlot <- g + geom_point() + 
+    geom_hline(yintercept = 0) +
+    geom_hline(yintercept = BoxH) +
+    geom_vline(xintercept = 0) +
+    geom_vline(xintercept = BoxW) +
+    xlim(0, BoxW) +
+    ylim(0, BoxH) +
+    labs(
+        title = myTitle
+        )
+  motionPlot
+  ggsave(mypath, dpi = "screen")
+  }
+  i = i + dt
+  j = j + 1
+}
+```
+# write files to gif
+```{r}
+jpegs <- list.files(file.path("C:", "Users", "jmeis", "Projects", "ParticleBox",
+                    "images"),
+                    pattern = "\\.jpg$",
+                    recursive = FALSE,
+                    all.files = FALSE,
+                    full.names = TRUE)
+jpegs %>%
+  map(image_read) %>% # reads each path file
+  image_join() %>% # joins image
+  image_animate(fps = 5) %>% # animates
+  image_write(file.path("C:", "Users", "jmeis", "Projects", "ParticleBox","All_plots.gif"))
+```
+
+
+
+
+
+
+
